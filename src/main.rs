@@ -205,14 +205,14 @@ fn available_moves(square: &Square, piece: &ColorPiece) -> Vec<Square> {
         (color, Piece::Pawn) => {
             match color {
                 Color::Black => {
-                    let mut moves = vec![square.down()];
+                    let mut moves = vec![square.down(), square.down_left(), square.down_right()];
                     if square.rank == 7 {
                         moves.push(square.neighboor(0, -2));
                     }
                     moves.into_iter().filter(|s| s.is_some()).map(|s| s.unwrap()).collect()
                 }
                 Color::White => {
-                    let mut moves = vec![square.up()];
+                    let mut moves = vec![square.up(), square.up_left(), square.up_right()];
                     if square.rank == 2 {
                         moves.push(square.neighboor(0, 2));
                     }
@@ -290,6 +290,15 @@ impl Board {
             return false;
         }
 
+        if from_piece == Piece::Pawn {
+            if from.file == to.file && to_piece != Piece::Empty {
+                return false;
+            }
+            if from.file != to.file && to_piece == Piece::Empty {
+                return false;
+            }
+        }
+
         if from_piece != Piece::Knight {
             let in_between = from.in_between(to);
             let with_pieces = in_between.iter()
@@ -330,6 +339,7 @@ impl Board {
     }
 
     fn exec_move(&self, from: &Square, to: &Square) -> Board {
+        println!("exec: {} -> {}", from, to);
         let mut new_state = *self;
         let from_piece = self.get(from);
         new_state.set(*from, EMPTY);
