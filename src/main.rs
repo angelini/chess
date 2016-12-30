@@ -31,7 +31,7 @@ const EMPTY: ColorPiece = (Color::White, Piece::Empty);
 const FILES: &'static [char] = &['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const RANKS: &'static [u8] = &[1, 2, 3, 4, 5, 6, 7, 8];
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Square {
     file: char,
     rank: u8,
@@ -52,6 +52,39 @@ impl Square {
     fn indexes(&self) -> (usize, usize) {
         (FILES.iter().position(|&f| f == self.file).unwrap(),
          RANKS.iter().position(|&r| r == self.rank).unwrap())
+    }
+
+    fn in_between(&self, other: &Square) -> Vec<Square> {
+        let (si, sj) = self.indexes();
+        let (oi, oj) = other.indexes();
+        let i_delta = oi as isize - si as isize;
+        let j_delta = oj as isize - sj as isize;
+
+        if !(i_delta == 0 || j_delta == 0 || i_delta.abs() == j_delta.abs()) {
+            panic!("Invalid in_between squares: {} {}", self, other);
+        }
+
+        let i_dir = if i_delta == 0 {
+            0
+        } else {
+            i_delta / i_delta.abs()
+        };
+        let j_dir = if j_delta == 0 {
+            0
+        } else {
+            j_delta / j_delta.abs()
+        };
+
+        let mut nodes = vec![];
+        let mut current = *self;
+        while let Some(square) = current.neighboor(i_dir, j_dir) {
+            if &square == other {
+                return nodes;
+            }
+            nodes.push(square);
+            current = square;
+        }
+        unreachable!()
     }
 
     fn neighboor(&self, i_delta: isize, j_delta: isize) -> Option<Square> {
@@ -249,16 +282,30 @@ impl Board {
         self.squares[i][j]
     }
 
-    #[allow(match_same_arms)]
     fn is_legal(&self, from: &Square, to: &Square) -> bool {
-        let from_piece = self.get(from);
-        let to_piece = self.get(to);
-        match (from_piece, to_piece) {
-            (_, (_, Piece::Empty)) => true,
-            ((Color::White, _), (Color::White, _)) |
-            ((Color::Black, _), (Color::Black, _)) => false,
-            _ => true,
+        let (from_color, from_piece) = self.get(from);
+        let (to_color, to_piece) = self.get(to);
+
+        if from_color == to_color && to_piece != Piece::Empty {
+            return false;
         }
+
+        if from_piece != Piece::Knight {
+            let in_between = from.in_between(to);
+            let with_pieces = in_between.iter()
+                .filter(|s| {
+                    match self.get(s) {
+                        (_, Piece::Empty) => false,
+                        _ => true,
+                    }
+                })
+                .collect::<Vec<&Square>>();
+            if !with_pieces.is_empty() {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn legal_moves(&self, color: Color) -> Vec<(Square, Square)> {
