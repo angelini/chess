@@ -457,13 +457,18 @@ fn main() {
     println!("mem::size_of::<Board>(): {:?}", mem::size_of::<Board>());
     println!("mem::size_of::<Square>(): {:?}", mem::size_of::<Square>());
 
-    let board = Board::new();
+    let mut board = Board::new();
     println!("{}", board);
 
-    let moves = board.legal_moves(Color::White);
-    let index = rand::thread_rng().gen_range(0, moves.len());
+    let mut is_white = true;
+    for _ in 0..40 {
+        let moves = board.legal_moves(if is_white { Color::White } else { Color::Black });
+        is_white = !is_white;
 
-    let (from, to) = moves[index];
-    let new_state = board.exec_move(&from, &to);
-    println!("{}", new_state);
+        let index = rand::thread_rng().gen_range(0, moves.len());
+
+        let (from, to) = moves[index];
+        board = board.exec_move(&from, &to);
+        println!("{}", board);
+    }
 }
