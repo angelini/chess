@@ -372,34 +372,34 @@ impl Board {
 
 impl fmt::Display for Board {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        try!(write!(f, "     a   b   c   d   e   f   g   h\n"));
-        try!(write!(f, "   ---------------------------------\n"));
+        try!(write!(f, "     a  b  c  d  e  f  g  h\n"));
+        try!(write!(f, "   -------------------------\n"));
         for (j, rank) in RANKS.iter().enumerate().rev() {
             try!(write!(f, "{} | ", rank));
 
             for (i, _) in FILES.iter().enumerate() {
-                let (c, p) = self.squares[i][j];
-                let c_char = match (c, p) {
-                    (_, Piece::Empty) => ' ',
-                    (Color::Black, _) => 'b',
-                    (Color::White, _) => 'w',
+                let c = match self.squares[i][j] {
+                    (__, Piece::Empty) => ' ',
+                    (Color::White, Piece::Bishop) => '♗',
+                    (Color::White, Piece::King) => '♔',
+                    (Color::White, Piece::Knight) => '♘',
+                    (Color::White, Piece::Pawn) => '♙',
+                    (Color::White, Piece::Queen) => '♕',
+                    (Color::White, Piece::Rook) => '♖',
+                    (Color::Black, Piece::Bishop) => '♝',
+                    (Color::Black, Piece::King) => '♚',
+                    (Color::Black, Piece::Knight) => '♞',
+                    (Color::Black, Piece::Pawn) => '♟',
+                    (Color::Black, Piece::Queen) => '♛',
+                    (Color::Black, Piece::Rook) => '♜',
                 };
-                let p_char = match p {
-                    Piece::Bishop => 'B',
-                    Piece::Empty => ' ',
-                    Piece::King => 'K',
-                    Piece::Knight => 'N',
-                    Piece::Pawn => 'P',
-                    Piece::Queen => 'Q',
-                    Piece::Rook => 'R',
-                };
-                try!(write!(f, " {}{} ", c_char, p_char))
+                try!(write!(f, " {} ", c))
             }
             try!(write!(f, "| {}", rank));
             try!(write!(f, "\n"))
         }
-        try!(write!(f, "   ---------------------------------\n"));
-        try!(write!(f, "     a   b   c   d   e   f   g   h\n"));
+        try!(write!(f, "   -------------------------\n"));
+        try!(write!(f, "     a  b  c  d  e  f  g  h\n"));
         Ok(())
     }
 }
