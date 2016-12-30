@@ -6,3 +6,4 @@ authors = ["Alex Angelini <alex.louis.angelini@gmail.com>"]
 [dependencies]
 clippy = "*"
 rand = "0.3"
+time = "0.1"

@@ -3,9 +3,10 @@
 #![plugin(clippy)]
 
 extern crate rand;
+extern crate time;
 
 use rand::Rng;
-use std::{convert, mem, fmt};
+use std::{convert, fmt, thread, time as stdtime};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Color {
@@ -22,6 +23,20 @@ enum Piece {
     Pawn,
     Queen,
     Rook,
+}
+
+impl Piece {
+    fn value(&self) -> usize {
+        match *self {
+            Piece::Empty |
+            Piece::King => 0,
+            Piece::Bishop |
+            Piece::Knight => 3,
+            Piece::Pawn => 1,
+            Piece::Queen => 9,
+            Piece::Rook => 5,
+        }
+    }
 }
 
 type ColorPiece = (Color, Piece);
@@ -258,6 +273,12 @@ fn available_moves(square: &Square, piece: &ColorPiece) -> Vec<Square> {
     }
 }
 
+#[derive(Debug)]
+enum GameStatus {
+    InPlay,
+    Finished(Color),
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Board {
     squares: [[ColorPiece; 8]; 8],
@@ -282,39 +303,36 @@ impl Board {
         self.squares[i][j]
     }
 
-    fn is_legal(&self, from: &Square, to: &Square) -> bool {
-        let (from_color, from_piece) = self.get(from);
-        let (to_color, to_piece) = self.get(to);
+    fn score(&self) -> (usize, usize) {
+        self.squares
+            .iter()
+            .flat_map(|c| c)
+            .fold((0, 0), |(w_score, b_score), &(c, p)| {
+                match c {
+                    Color::Black => (w_score, b_score + p.value()),
+                    Color::White => (w_score + p.value(), b_score),
+                }
+            })
+    }
 
-        if from_color == to_color && to_piece != Piece::Empty {
-            return false;
+    fn status(&self) -> GameStatus {
+        let kings = self.squares
+            .iter()
+            .flat_map(|c| c)
+            .fold((false, false), |(w_has_king, b_has_king), &(c, p)| {
+                match c {
+                    Color::Black => (w_has_king, b_has_king || p == Piece::King),
+                    Color::White => (w_has_king || p == Piece::King, b_has_king),
+                }
+            });
+
+        println!("kings: {:?}", kings);
+        match kings {
+            (true, true) => GameStatus::InPlay,
+            (true, false) => GameStatus::Finished(Color::White),
+            (false, true) => GameStatus::Finished(Color::Black),
+            (false, false) => panic!("Invalid game state: no kings found"),
         }
-
-        if from_piece == Piece::Pawn {
-            if from.file == to.file && to_piece != Piece::Empty {
-                return false;
-            }
-            if from.file != to.file && to_piece == Piece::Empty {
-                return false;
-            }
-        }
-
-        if from_piece != Piece::Knight {
-            let in_between = from.in_between(to);
-            let with_pieces = in_between.iter()
-                .filter(|s| {
-                    match self.get(s) {
-                        (_, Piece::Empty) => false,
-                        _ => true,
-                    }
-                })
-                .collect::<Vec<&Square>>();
-            if !with_pieces.is_empty() {
-                return false;
-            }
-        }
-
-        true
     }
 
     fn legal_moves(&self, color: Color) -> Vec<(Square, Square)> {
@@ -350,6 +368,45 @@ impl Board {
     fn set<S: Into<Square>>(&mut self, square: S, piece: ColorPiece) {
         let (i, j) = square.into().indexes();
         self.squares[i][j] = piece;
+    }
+
+    fn is_legal(&self, from: &Square, to: &Square) -> bool {
+        let (from_color, from_piece) = self.get(from);
+        let (to_color, to_piece) = self.get(to);
+
+        if from_color == to_color && to_piece != Piece::Empty {
+            return false;
+        }
+
+        if from_piece == Piece::Pawn {
+            if from.file == to.file && to_piece != Piece::Empty {
+                return false;
+            }
+            if from.file != to.file && to_piece == Piece::Empty {
+                return false;
+            }
+        }
+
+        if from_piece != Piece::Knight {
+            let in_between = from.in_between(to);
+            let with_pieces = in_between.iter()
+                .filter(|s| {
+                    match self.get(s) {
+                        (_, Piece::Empty) => false,
+                        _ => true,
+                    }
+                })
+                .collect::<Vec<&Square>>();
+            if !with_pieces.is_empty() {
+                // println!("from: {:?}", from);
+                // println!("to: {:?}", to);
+                // println!("with_pieces: {:?}", with_pieces);
+                // println!("---");
+                return false;
+            }
+        }
+
+        true
     }
 
     fn add_bishops(&mut self, color: &Color) {
@@ -461,24 +518,45 @@ impl fmt::Display for Board {
     }
 }
 
-fn main() {
-    println!("mem::size_of::<ColorPiece>(): {:?}",
-             mem::size_of::<ColorPiece>());
-    println!("mem::size_of::<Board>(): {:?}", mem::size_of::<Board>());
-    println!("mem::size_of::<Square>(): {:?}", mem::size_of::<Square>());
+const TURNS: usize = 1000;
 
+fn main() {
     let mut board = Board::new();
     println!("{}", board);
 
+    let start = time::precise_time_ns();
     let mut is_white = true;
-    for _ in 0..40 {
+
+    let mut max_moves = 0;
+    let mut total_moves = 0;
+
+    for _ in 0..TURNS {
         let moves = board.legal_moves(if is_white { Color::White } else { Color::Black });
         is_white = !is_white;
+
+        max_moves = std::cmp::max(max_moves, moves.len());
+        total_moves += moves.len();
+
+        if moves.is_empty() {
+            board = Board::new();
+            println!("{}", board);
+            continue;
+        }
 
         let index = rand::thread_rng().gen_range(0, moves.len());
 
         let (from, to) = moves[index];
         board = board.exec_move(&from, &to);
+        print!("{}[2J", 27 as char);
         println!("{}", board);
+        println!("board.score(): {:?}", board.score());
+        println!("board.status(): {:?}", board.status());
+        thread::sleep(stdtime::Duration::from_millis(800));
     }
+    let total_time_s = (time::precise_time_ns() - start) as f64 / 1000000000 as f64;
+    println!("max_moves: {:?}", max_moves);
+    println!("moves/turn: {:.*}", 5, total_moves / TURNS);
+    println!("turns: {:?}", TURNS);
+    println!("time (s): {:.*}", 5, total_time_s);
+    println!("turns/s: {:.0}", TURNS as f64 / total_time_s);
 }
