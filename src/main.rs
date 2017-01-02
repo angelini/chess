@@ -1,10 +1,14 @@
-#![feature(plugin)]
+#![feature(conservative_impl_trait, plugin)]
 
 #![plugin(clippy)]
 
+extern crate futures;
+extern crate futures_cpupool;
 extern crate rand;
 extern crate time;
 
+use futures::{future, Future};
+use futures_cpupool::{CpuPool, CpuFuture};
 use rand::Rng;
 use std::{convert, fmt};
 use std::collections::HashMap;
@@ -560,7 +564,7 @@ impl GameTreeNode {
         executed.iter().map(|c| c.size()).fold(0, |acc, size| acc + size)
     }
 
-    fn exec_random_moves(&mut self, runs_per_level: usize, depth: usize) {
+    fn exec_random_moves(&mut self, runs_per_level: usize, depth: usize, pool: Option<&CpuPool>) {
         if let GameStatus::Finished(_) = self.board.status() {
             return;
         }
@@ -578,11 +582,39 @@ impl GameTreeNode {
 
         rand::thread_rng().shuffle(&mut not_executed);
 
-        for (from, to) in not_executed.into_iter().take(runs_per_level) {
-            let new_state = self.board.exec_move(&from, &to);
-            let mut node = GameTreeNode::new(new_state, self.turn.other());
-            node.exec_random_moves(runs_per_level / 2, depth - 1);
-            self.children.insert((from, to), Some(node));
+        let runs = runs_per_level / 2;
+        let depth = depth - 1;
+        let color = self.turn.other();
+
+        if let Some(pool) = pool {
+            let mut futures = vec![];
+
+            for (from, to) in not_executed.into_iter().take(runs_per_level) {
+                let board = self.board;
+
+                let future: CpuFuture<(Move, GameTreeNode), ()> = pool.spawn_fn(move || {
+                    let new_state = board.exec_move(&from, &to);
+                    let mut node = GameTreeNode::new(new_state, color);
+                    node.exec_random_moves(runs, depth, None);
+                    future::ok(((from, to), node))
+                });
+                futures.push(future)
+            }
+
+            for future in futures {
+                match future.wait() {
+                    Ok((cmove, node)) => self.children.insert(cmove, Some(node)),
+                    Err(_) => panic!("Failed future"),
+                };
+            }
+
+        } else {
+            for (from, to) in not_executed.into_iter().take(runs_per_level) {
+                let new_state = self.board.exec_move(&from, &to);
+                let mut node = GameTreeNode::new(new_state, color);
+                node.exec_random_moves(runs, depth, None);
+                self.children.insert((from, to), Some(node));
+            }
         }
     }
 
@@ -617,9 +649,9 @@ impl GameTreeNode {
     }
 }
 
-fn next_move(board: Board, turn: Color) -> Option<Move> {
+fn next_move(board: Board, turn: Color, pool: &CpuPool) -> Option<Move> {
     let mut tree = GameTreeNode::new(board, turn);
-    tree.exec_random_moves(64, 5);
+    tree.exec_random_moves(64, 5, Some(pool));
 
     let mut max_avg_score = -1000.0_f64;
     let mut result = None;
@@ -630,7 +662,7 @@ fn next_move(board: Board, turn: Color) -> Option<Move> {
             Some(node) => {
                 let avg_score = node.avg_score(turn);
                 size += node.size();
-                println!("{} -> {}   {}", cmove.0, cmove.1, avg_score);
+                // println!("{} -> {}   {}", cmove.0, cmove.1, avg_score);
 
                 if avg_score > max_avg_score {
                     max_avg_score = avg_score;
@@ -650,6 +682,7 @@ fn next_move(board: Board, turn: Color) -> Option<Move> {
 }
 
 fn main() {
+    let pool = CpuPool::new_num_cpus();
     let mut board = Board::new();
     println!("{}", board);
 
@@ -660,7 +693,7 @@ fn main() {
     loop {
         turn_count += 1;
 
-        if let Some((from, to)) = next_move(board, turn) {
+        if let Some((from, to)) = next_move(board, turn, &pool) {
             board = board.exec_move(&from, &to);
 
             // print!("{}[2J", 27 as char);
@@ -678,5 +711,5 @@ fn main() {
     let total_time_s = (time::precise_time_ns() - start) as f64 / 1000000000 as f64;
     println!("turns: {:?}", turn_count);
     println!("time (s): {:.*}", 5, total_time_s);
-    println!("turns/s: {:.0}", turn_count as f64 / total_time_s);
+    println!("turns/s: {:.*}", 5, turn_count as f64 / total_time_s);
 }
