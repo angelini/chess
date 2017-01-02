@@ -6,12 +6,22 @@ extern crate rand;
 extern crate time;
 
 use rand::Rng;
-use std::{convert, fmt, thread, time as stdtime};
+use std::{convert, fmt};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Color {
     Black,
     White,
+}
+
+impl Color {
+    fn other(&self) -> Color {
+        match *self {
+            Color::Black => Color::White,
+            Color::White => Color::Black,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,10 +38,8 @@ enum Piece {
 impl Piece {
     fn value(&self) -> usize {
         match *self {
-            Piece::Empty |
-            Piece::King => 0,
-            Piece::Bishop |
-            Piece::Knight => 3,
+            Piece::Empty | Piece::King => 0,
+            Piece::Bishop | Piece::Knight => 3,
             Piece::Pawn => 1,
             Piece::Queen => 9,
             Piece::Rook => 5,
@@ -46,7 +54,7 @@ const EMPTY: ColorPiece = (Color::White, Piece::Empty);
 const FILES: &'static [char] = &['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const RANKS: &'static [u8] = &[1, 2, 3, 4, 5, 6, 7, 8];
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct Square {
     file: char,
     rank: u8,
@@ -156,6 +164,8 @@ impl convert::From<(char, u8)> for Square {
         Square::new(file, rank)
     }
 }
+
+type Move = (Square, Square);
 
 fn available_moves(square: &Square, piece: &ColorPiece) -> Vec<Square> {
     match *piece {
@@ -304,6 +314,13 @@ impl Board {
     }
 
     fn score(&self) -> (usize, usize) {
+        if let GameStatus::Finished(color) = self.status() {
+            return match color {
+                Color::Black => (0, 100),
+                Color::White => (100, 0),
+            };
+        }
+
         self.squares
             .iter()
             .flat_map(|c| c)
@@ -326,7 +343,6 @@ impl Board {
                 }
             });
 
-        println!("kings: {:?}", kings);
         match kings {
             (true, true) => GameStatus::InPlay,
             (true, false) => GameStatus::Finished(Color::White),
@@ -335,7 +351,7 @@ impl Board {
         }
     }
 
-    fn legal_moves(&self, color: Color) -> Vec<(Square, Square)> {
+    fn legal_moves(&self, color: Color) -> Vec<Move> {
         self.squares
             .iter()
             .enumerate()
@@ -350,14 +366,13 @@ impl Board {
                 available_moves(&square, &piece)
                     .into_iter()
                     .map(|dest| (square, dest))
-                    .collect::<Vec<(Square, Square)>>()
+                    .collect::<Vec<Move>>()
             })
             .filter(|&(from, to)| self.is_legal(&from, &to))
             .collect()
     }
 
     fn exec_move(&self, from: &Square, to: &Square) -> Board {
-        println!("exec: {} -> {}", from, to);
         let mut new_state = *self;
         let from_piece = self.get(from);
         new_state.set(*from, EMPTY);
@@ -398,10 +413,6 @@ impl Board {
                 })
                 .collect::<Vec<&Square>>();
             if !with_pieces.is_empty() {
-                // println!("from: {:?}", from);
-                // println!("to: {:?}", to);
-                // println!("with_pieces: {:?}", with_pieces);
-                // println!("---");
                 return false;
             }
         }
@@ -518,45 +529,154 @@ impl fmt::Display for Board {
     }
 }
 
-const TURNS: usize = 1000;
+struct GameTreeNode {
+    board: Board,
+    turn: Color,
+    children: HashMap<Move, Option<GameTreeNode>>,
+}
+
+impl GameTreeNode {
+    fn new(board: Board, turn: Color) -> GameTreeNode {
+        GameTreeNode {
+            board: board,
+            turn: turn,
+            children: board.legal_moves(turn).into_iter().map(|p| (p, None)).collect(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        let executed = self.children
+            .values()
+            .filter(|v| v.is_some())
+            .map(|v| match *v {
+                Some(ref node) => node,
+                None => unreachable!(),
+            })
+            .collect::<Vec<&GameTreeNode>>();
+        if executed.is_empty() {
+            return 1;
+        }
+
+        executed.iter().map(|c| c.size()).fold(0, |acc, size| acc + size)
+    }
+
+    fn exec_random_moves(&mut self, runs_per_level: usize, depth: usize) {
+        if let GameStatus::Finished(_) = self.board.status() {
+            return;
+        }
+
+        if depth == 0 {
+            return;
+        }
+
+        let mut not_executed = self.children
+            .iter()
+            .filter(|&(_, v)| v.is_none())
+            .map(|(k, _)| k)
+            .cloned()
+            .collect::<Vec<Move>>();
+
+        rand::thread_rng().shuffle(&mut not_executed);
+
+        for (from, to) in not_executed.into_iter().take(runs_per_level) {
+            let new_state = self.board.exec_move(&from, &to);
+            let mut node = GameTreeNode::new(new_state, self.turn.other());
+            node.exec_random_moves(runs_per_level / 2, depth - 1);
+            self.children.insert((from, to), Some(node));
+        }
+    }
+
+    fn avg_score(&self, color: Color) -> f64 {
+        let executed = self.children
+            .values()
+            .filter(|v| v.is_some())
+            .map(|v| match *v {
+                Some(ref node) => node,
+                None => unreachable!(),
+            })
+            .collect::<Vec<&GameTreeNode>>();
+
+        let score = match color {
+            Color::Black => self.board.score().1 as f64 - self.board.score().0 as f64,
+            Color::White => self.board.score().0 as f64 - self.board.score().1 as f64,
+        };
+
+        if executed.is_empty() {
+            return score;
+        }
+
+        let (sum, count) = executed.iter()
+            .map(|node| node.avg_score(color))
+            .fold((score, 1), |(sum, count), score| (sum + score, count + 1));
+
+        if count == 0 {
+            -100.0
+        } else {
+            sum as f64 / count as f64
+        }
+    }
+}
+
+fn next_move(board: Board, turn: Color) -> Option<Move> {
+    let mut tree = GameTreeNode::new(board, turn);
+    tree.exec_random_moves(64, 5);
+
+    let mut max_avg_score = -1000.0_f64;
+    let mut result = None;
+    let mut size = 0;
+
+    for (cmove, node) in tree.children {
+        match node {
+            Some(node) => {
+                let avg_score = node.avg_score(turn);
+                size += node.size();
+                println!("{} -> {}   {}", cmove.0, cmove.1, avg_score);
+
+                if avg_score > max_avg_score {
+                    max_avg_score = avg_score;
+                    result = Some(cmove);
+                }
+            }
+            None => continue,
+        }
+    }
+
+    if let Some(cmove) = result {
+        println!("turn: {:?}", turn);
+        println!("result: {} -> {}", cmove.0, cmove.1);
+        println!("size: {:?}", size);
+    }
+    result
+}
 
 fn main() {
     let mut board = Board::new();
     println!("{}", board);
 
     let start = time::precise_time_ns();
-    let mut is_white = true;
+    let mut turn_count = 0;
+    let mut turn = Color::White;
 
-    let mut max_moves = 0;
-    let mut total_moves = 0;
+    loop {
+        turn_count += 1;
 
-    for _ in 0..TURNS {
-        let moves = board.legal_moves(if is_white { Color::White } else { Color::Black });
-        is_white = !is_white;
+        if let Some((from, to)) = next_move(board, turn) {
+            board = board.exec_move(&from, &to);
 
-        max_moves = std::cmp::max(max_moves, moves.len());
-        total_moves += moves.len();
-
-        if moves.is_empty() {
-            board = Board::new();
+            // print!("{}[2J", 27 as char);
             println!("{}", board);
-            continue;
+            println!("board.score(): {:?}", board.score());
+            println!("board.status(): {:?}", board.status());
+
+            if let GameStatus::Finished(_) = board.status() {
+                break;
+            }
         }
-
-        let index = rand::thread_rng().gen_range(0, moves.len());
-
-        let (from, to) = moves[index];
-        board = board.exec_move(&from, &to);
-        print!("{}[2J", 27 as char);
-        println!("{}", board);
-        println!("board.score(): {:?}", board.score());
-        println!("board.status(): {:?}", board.status());
-        thread::sleep(stdtime::Duration::from_millis(800));
+        turn = turn.other();
     }
+
     let total_time_s = (time::precise_time_ns() - start) as f64 / 1000000000 as f64;
-    println!("max_moves: {:?}", max_moves);
-    println!("moves/turn: {:.*}", 5, total_moves / TURNS);
-    println!("turns: {:?}", TURNS);
+    println!("turns: {:?}", turn_count);
     println!("time (s): {:.*}", 5, total_time_s);
-    println!("turns/s: {:.0}", TURNS as f64 / total_time_s);
+    println!("turns/s: {:.0}", turn_count as f64 / total_time_s);
 }
