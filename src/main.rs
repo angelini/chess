@@ -536,15 +536,20 @@ impl fmt::Display for Board {
 struct GameTreeNode {
     board: Board,
     turn: Color,
+    size: usize,
     children: HashMap<Move, Option<GameTreeNode>>,
 }
 
 impl GameTreeNode {
-    fn new(board: Board, turn: Color) -> GameTreeNode {
+    fn new(board: Board, turn: Color, size: usize) -> GameTreeNode {
+        let mut legal_moves = board.legal_moves(turn);
+        rand::thread_rng().shuffle(&mut legal_moves);
+
         GameTreeNode {
             board: board,
             turn: turn,
-            children: board.legal_moves(turn).into_iter().map(|p| (p, None)).collect(),
+            size: size,
+            children: legal_moves.into_iter().take(size).map(|m| (m, None)).collect(),
         }
     }
 
@@ -564,38 +569,29 @@ impl GameTreeNode {
         executed.iter().map(|c| c.size()).fold(0, |acc, size| acc + size)
     }
 
-    fn exec_random_moves(&mut self, runs_per_level: usize, depth: usize, pool: Option<&CpuPool>) {
+    fn exec_random_moves(&mut self, depth: usize, pool: Option<&CpuPool>) {
         if let GameStatus::Finished(_) = self.board.status() {
             return;
         }
 
-        if depth == 0 {
+        let runs = self.size / 2;
+        let new_depth = depth - 1;
+        let color = self.turn.other();
+
+        if new_depth == 0 {
             return;
         }
-
-        let mut not_executed = self.children
-            .iter()
-            .filter(|&(_, v)| v.is_none())
-            .map(|(k, _)| k)
-            .cloned()
-            .collect::<Vec<Move>>();
-
-        rand::thread_rng().shuffle(&mut not_executed);
-
-        let runs = runs_per_level / 2;
-        let depth = depth - 1;
-        let color = self.turn.other();
 
         if let Some(pool) = pool {
             let mut futures = vec![];
 
-            for (from, to) in not_executed.into_iter().take(runs_per_level) {
+            for &(from, to) in self.children.keys() {
                 let board = self.board;
 
                 let future: CpuFuture<(Move, GameTreeNode), ()> = pool.spawn_fn(move || {
                     let new_state = board.exec_move(&from, &to);
-                    let mut node = GameTreeNode::new(new_state, color);
-                    node.exec_random_moves(runs, depth, None);
+                    let mut node = GameTreeNode::new(new_state, color, runs);
+                    node.exec_random_moves(new_depth, None);
                     future::ok(((from, to), node))
                 });
                 futures.push(future)
@@ -607,13 +603,12 @@ impl GameTreeNode {
                     Err(_) => panic!("Failed future"),
                 };
             }
-
         } else {
-            for (from, to) in not_executed.into_iter().take(runs_per_level) {
+            for (&(from, to), node) in &mut self.children {
                 let new_state = self.board.exec_move(&from, &to);
-                let mut node = GameTreeNode::new(new_state, color);
-                node.exec_random_moves(runs, depth, None);
-                self.children.insert((from, to), Some(node));
+                let mut new_node = GameTreeNode::new(new_state, color, runs);
+                new_node.exec_random_moves(new_depth, None);
+                *node = Some(new_node)
             }
         }
     }
@@ -650,8 +645,8 @@ impl GameTreeNode {
 }
 
 fn next_move(board: Board, turn: Color, pool: &CpuPool) -> Option<Move> {
-    let mut tree = GameTreeNode::new(board, turn);
-    tree.exec_random_moves(64, 5, Some(pool));
+    let mut tree = GameTreeNode::new(board, turn, 64);
+    tree.exec_random_moves(5, Some(pool));
 
     let mut max_avg_score = -1000.0_f64;
     let mut result = None;
